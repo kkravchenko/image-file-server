@@ -4,13 +4,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	config "is/internal/domain"
+	"is/internal/handlers"
+	conf "is/pkg/config"
+	"is/pkg/middleware"
+	"log/slog"
 	"net/http"
 	"os"
+
+	"github.com/gin-gonic/gin"
 )
 
 type justFilesFilesystem struct {
-	fs http.FileSystem
-	// readDirBatchSize - configuration parameter for `Readdir` func
+	fs               http.FileSystem
 	readDirBatchSize int
 }
 
@@ -55,16 +61,36 @@ func (e neuteredStatFile) Stat() (os.FileInfo, error) {
 }
 
 func main() {
-	fs := justFilesFilesystem{fs: http.Dir("public"), readDirBatchSize: 2}
-	handler := http.StripPrefix("/image/", http.FileServer(fs))
-	http.Handle("/image/", handler)
+	envConfig, err := conf.Config[config.EnvConfig](".env")
+	if err != nil {
+		slog.Error("Error loading config", "error", err)
+		os.Exit(1)
+	}
+
+	r := gin.New()
+
+	r.MaxMultipartMemory = 8 << 20
+
+	r.StaticFS("/image", http.Dir("public"))
+
+	api := r.Group("/api/v3")
+	{
+		api.POST("/image",
+			middleware.CORSMiddleware(),
+			middleware.BasicAuth(),
+			handlers.AddImage(envConfig.ImagePath))
+	}
+
+	r.SetTrustedProxies(nil)
 
 	fmt.Println("Server started on http://localhost:3333")
-	err := http.ListenAndServe(":3333", nil)
-	if errors.Is(err, http.ErrServerClosed) {
-		fmt.Printf("server closed\n")
-	} else if err != nil {
-		fmt.Printf("error starting server: %s\n", err)
-		os.Exit(1)
+
+	if err := r.Run(":3333"); err != nil {
+		if errors.Is(err, http.ErrServerClosed) {
+			fmt.Println("server closed gracefully")
+		} else {
+			fmt.Printf("error starting server: %v\n", err)
+			os.Exit(1)
+		}
 	}
 }
